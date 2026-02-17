@@ -1,92 +1,101 @@
-// Vercel Serverless Function
-// URL: https://your-project.vercel.app/api/deploy
+// api/deploy.js (Multi-Project Version)
+// CADS v2.0 - 複数プロジェクト対応
 
 export default async function handler(req, res) {
-  // CORS設定（全AIからアクセス可能に）
+  // CORS
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // OPTIONSリクエスト対応（CORS Preflight）
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  // POSTのみ許可
+  if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') {
-    return res.status(405).json({ 
-      success: false, 
-      error: 'Method not allowed. Use POST.' 
-    });
+    return res.status(405).json({ success: false, error: 'Method not allowed' });
   }
 
   try {
-    const { filename, content, message } = req.body;
+    const { filename, content, message, project, deployKey } = req.body;
 
     // バリデーション
     if (!filename || !content) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: filename, content'
+        error: 'filename と content は必須です'
       });
     }
 
-    // 環境変数から取得
-    const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-    const GITHUB_REPO = process.env.GITHUB_REPO;
+    // デプロイキー確認（セキュリティ強化）
+    const DEPLOY_KEY = process.env.DEPLOY_KEY;
+    if (DEPLOY_KEY && deployKey !== DEPLOY_KEY) {
+      return res.status(401).json({
+        success: false,
+        error: 'デプロイキーが一致しません'
+      });
+    }
 
-    if (!GITHUB_TOKEN || !GITHUB_REPO) {
+    // プロジェクト選択（複数プロジェクト対応）
+    let targetRepo;
+    let GITHUB_TOKEN;
+
+    if (project) {
+      // 指定されたプロジェクト
+      targetRepo = process.env[`GITHUB_REPO_${project.toUpperCase()}`];
+      GITHUB_TOKEN = process.env[`GITHUB_TOKEN_${project.toUpperCase()}`] || process.env.GITHUB_TOKEN;
+    } else {
+      // デフォルト（Smart-Price-Book）
+      targetRepo = process.env.GITHUB_REPO;
+      GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+    }
+
+    if (!GITHUB_TOKEN || !targetRepo) {
       return res.status(500).json({
         success: false,
-        error: 'Server configuration error: Missing Github credentials'
+        error: `プロジェクト設定が見つかりません: ${project || 'default'}`
       });
     }
 
-    // コンテンツをBase64エンコード
+    // Base64エンコード
     const base64Content = Buffer.from(content, 'utf-8').toString('base64');
 
-    // Step 1: 既存ファイルのSHA取得（更新時に必要）
+    // 既存ファイルのSHA取得
     let sha = null;
     try {
       const getResponse = await fetch(
-        `https://api.github.com/repos/${GITHUB_REPO}/contents/${filename}`,
+        `https://api.github.com/repos/${targetRepo}/contents/${filename}`,
         {
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${GITHUB_TOKEN}`,
             'Accept': 'application/vnd.github.v3+json',
-            'User-Agent': 'SmartPrice-Deploy-Server'
+            'User-Agent': 'CADS-v2.0'
           }
         }
       );
-
       if (getResponse.ok) {
         const data = await getResponse.json();
         sha = data.sha;
       }
     } catch (error) {
-      // ファイルが存在しない場合は新規作成
-      console.log('File does not exist, will create new file');
+      console.log('新規ファイル作成:', filename);
     }
 
-    // Step 2: ファイル作成または更新
-    const commitMessage = message || `Update ${filename} via AI`;
+    // ファイル作成/更新
+    const commitMessage = message || `CADS: Update ${filename}`;
     
     const putResponse = await fetch(
-      `https://api.github.com/repos/${GITHUB_REPO}/contents/${filename}`,
+      `https://api.github.com/repos/${targetRepo}/contents/${filename}`,
       {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${GITHUB_TOKEN}`,
           'Accept': 'application/vnd.github.v3+json',
           'Content-Type': 'application/json',
-          'User-Agent': 'SmartPrice-Deploy-Server'
+          'User-Agent': 'CADS-v2.0'
         },
         body: JSON.stringify({
           message: commitMessage,
           content: base64Content,
-          ...(sha && { sha })  // SHAがあれば含める（更新時）
+          ...(sha && { sha })
         })
       }
     );
@@ -101,12 +110,15 @@ export default async function handler(req, res) {
     // 成功レスポンス
     return res.status(200).json({
       success: true,
-      message: 'Successfully deployed to Github',
+      message: 'デプロイ成功',
       data: {
+        project: project || 'default',
+        repo: targetRepo,
         filename: filename,
         url: result.content.html_url,
         sha: result.content.sha,
-        commit: result.commit.sha
+        commit: result.commit.sha,
+        timestamp: new Date().toISOString()
       }
     });
 
